@@ -85,3 +85,35 @@
     });
   }
   ````
+
+  + 我们知道当data中属性值被访问时，会被getter函数拦截，根据我们旧有的知识体系可以知道，实例挂载前会创建一个渲染watcher。updateComponent的逻辑会执行实例的挂载，在这个过程中，模板会被优先解析为render函数，而render函数转换成Vnode时，会访问到定义的data数据，这个时候会触发gettter进行依赖收集。而此时数据收集的依赖就是这个渲染watcher本身。此时代码中依赖收集阶段会做下面几件事：
+    1. 为当前的watcher(该场景下是渲染watcher)添加拥有的数据。
+    2. 为当前的数据收集需要监听的依赖
+  ````js
+  // defineReactive###1中的getter函数中会调用dep.depend()函数，它实际上是定义在Dep类的原型上的一个函数。
+  Dep.prototype.depend = function depend () {
+    if (Dep.target) {
+      Dep.target.addDep(this);
+    }
+  };
+  // Dep.target为当前执行的watcher,在渲染阶段，Dep.target为组件挂载时实例化的渲染watcher,因此depend方法又会调用当前watcher的addDep方法为watcher添加依赖的数据，addDep核心代码如下。
+  Watcher.prototype.addDep = function addDep (dep) {
+    var id = dep.id;
+    if (!this.newDepIds.has(id)) {
+      // newDepIds和newDeps记录watcher拥有的数据
+      this.newDepIds.add(id);
+      this.newDeps.push(dep);
+      // 避免重复添加同一个data收集器
+      if (!this.depIds.has(id)) {
+        dep.addSub(this);
+      }
+    }
+  };
+  // 其中newDepIds是具有唯一成员是Set数据结构，newDeps是数组，他们用来记录当前watcher所拥有的数据，这一过程会进行逻辑判断，避免同一数据添加多次。 addSub为每个数据依赖收集器添加需要被监听的watcher。
+  Dep.prototype.addSub = function addSub (sub) {
+    //将当前watcher添加到数据依赖收集器中
+    this.subs.push(sub);
+  };
+  ````
+
+  +  getter如果遇到属性值为对象时，会为该对象的每个值收集依赖。这句话也很好理解，如果我们将一个值为基本类型的响应式数据改变成一个对象，此时新增对象里的属性，也需要设置成响应式数据。遇到属性值为数组时，进行特殊处理。通俗的总结一下依赖收集的过程，每个数据就是一个依赖管理器，而每个使用数据的地方就是一个依赖。当访问到数据时，会将当前访问的场景作为一个依赖收集到依赖管理器中，同时也会为这个场景的依赖收集拥有的数据。
