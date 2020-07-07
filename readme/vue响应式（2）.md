@@ -117,3 +117,76 @@
   ````
 
   +  getter如果遇到属性值为对象时，会为该对象的每个值收集依赖。这句话也很好理解，如果我们将一个值为基本类型的响应式数据改变成一个对象(比如由null改为Object)，此时新增对象里的属性，也需要设置成响应式数据。遇到属性值为数组时，进行其他特殊处理。通俗的总结一下依赖收集的过程，每个数据就是一个依赖管理器，而每个使用数据的地方就是一个依赖。当访问到数据时，会将当前访问的场景作为一个依赖收集到依赖管理器中，同时也会为这个场景的依赖收集拥有的数据。
+
+
+
+
+
+
+
+
+
+
+## 派发更新
+  + 在数据发生改变时，会执行定义好的setter方法，先看源码。
+  ````js
+  Object.defineProperty(obj,key, {
+    ···
+    set: function reactiveSetter (newVal) {
+        var value = getter ? getter.call(obj) : val;
+        // 新值和旧值相等时，跳出操作
+        if (newVal === value || (newVal !== newVal && value !== value)) {
+          return
+        }
+        ···
+        // 新值为对象时，会为新对象进行依赖收集过程
+        childOb = !shallow && observe(newVal);
+        dep.notify();
+      }
+  })
+  ````
+  + 派发更新阶段会做以下几件事：
+    1. 判断数据更改前后是否一致，如果数据相等则不进行任何派发更新操作。
+    2. 新值为对象时，会对该值的属性进行依赖收集过程。
+    3. 通知该数据收集的watcher依赖,遍历每个watcher进行数据更新,这个阶段是调用该数据依赖收集器的dep.notify方法进行更新的派发。
+  ````js
+  Dep.prototype.notify = function notify () {
+    var subs = this.subs.slice();
+    if (!config.async) {
+      // 根据依赖的id进行排序
+      subs.sort(function (a, b) { return a.id - b.id; });
+    }
+    for (var i = 0, l = subs.length; i < l; i++) {
+      // 遍历每个依赖，进行更新数据操作。
+      subs[i].update();
+    }
+  };
+  ````
+  + 更新时会将每个watcher推到队列中，等待下一个tick到来时取出每个watcher进行run操作
+  ````js
+  Watcher.prototype.update = function update () {
+    ···
+    queueWatcher(this);
+  };
+  ````
+  + queueWatcher方法的调用，会将数据所收集的依赖依次推到queue数组中,数组会在下一个事件循环'tick'中根据缓冲结果进行视图更新。而在执行视图更新过程中，难免会因为数据的改变而在渲染模板上添加新的依赖，这样又会执行queueWatcher的过程。所以需要有一个标志位来记录是否处于异步更新过程的队列中。这个标志位为flushing,当处于异步更新过程时，新增的watcher会插入到queue中。
+  ````js
+  function queueWatcher (watcher) {
+    var id = watcher.id;
+    // 保证同一个watcher只执行一次
+    if (has[id] == null) {
+      has[id] = true;
+      if (!flushing) {
+        queue.push(watcher);
+      } else {
+        var i = queue.length - 1;
+        while (i > index && queue[i].id > watcher.id) {
+          i--;
+        }
+        queue.splice(i + 1, 0, watcher);
+      }
+      ···
+      nextTick(flushSchedulerQueue);
+    }
+  }
+  ````
