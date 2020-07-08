@@ -145,7 +145,7 @@
       }
   })
   ````
-  + 派发更新阶段会做以下几件事：
+  + 派发更新阶段会做以下几件事(代码如上)：
     1. 判断数据更改前后是否一致，如果数据相等则不进行任何派发更新操作。
     2. 新值为对象时，会对该值的属性进行依赖收集过程。
     3. 通知该数据收集的watcher依赖,遍历每个watcher进行数据更新,这个阶段是调用该数据依赖收集器的dep.notify方法进行更新的派发。
@@ -169,7 +169,7 @@
     queueWatcher(this);
   };
   ````
-  + queueWatcher方法的调用，会将数据所收集的依赖依次推到queue数组中,数组会在下一个事件循环'tick'中根据缓冲结果进行视图更新。而在执行视图更新过程中，难免会因为数据的改变而在渲染模板上添加新的依赖，这样又会执行queueWatcher的过程。所以需要有一个标志位来记录是否处于异步更新过程的队列中。这个标志位为flushing,当处于异步更新过程时，新增的watcher会插入到queue中。
+  + queueWatcher方法的调用，会将数据所收集的依赖依次推到queue数组中,数组会在下一个事件循环'tick'中根据缓冲结果进行视图更新。而在执行视图更新过程中，难免会因为数据的改变而在渲染模板上添加新的依赖，这样又会执行queueWatcher的过程。所以需要有一个标志位来记录是否处于异步更新过程的队列中。这个标志位为flushing,当处于异步更新过程时，新增的watcher会替换队列中未执行的同id的watcher或者插入到queue中。
   ````js
   function queueWatcher (watcher) {
     var id = watcher.id;
@@ -189,4 +189,87 @@
       nextTick(flushSchedulerQueue);
     }
   }
+  ````
+  + nextTick会缓冲多个数据处理过程，等到下一个事件循环tick中再去执行DOM操作，它的原理，本质是利用事件循环的微任务队列实现异步更新。当下一个tick到来时，会执行flushSchedulerQueue方法，它会拿到收集的queue数组(这是一个watcher的集合),并对数组依赖进行排序。为什么进行排序呢？源码中解释了三点：
+    1. 组件创建是先父后子，所以组件的更新也是先父后子，因此需要保证父的渲染watcher优先于子的渲染watcher更新。
+    2. 用户自定义的watcher,称为user watcher。 user watcher和render watcher执行也有先后，由于user watchers比render watcher要先创建，所以user watcher要优先执行。
+    3. 如果一个组件在父组件的 watcher 执行阶段被销毁，那么它对应的 watcher 执行都可以被跳过。
+  + flushSchedulerQueue阶段，重要的过程可以总结为四点：
+    1. 对queue中的watcher进行排序，原因上面已经总结。
+    2. 遍历watcher,如果当前watcher有before配置，则执行before方法，对应前面的渲染watcher:在渲染watcher实例化时，我们传递了before函数，即在下个tick更新视图前，会调用beforeUpdate生命周期钩子。
+    3. 执行watcher.run进行修改的操作。
+    4. 重置恢复状态，这个阶段会将一些流程控制的状态变量恢复为初始值，并清空记录watcher的队列。
+  ````js
+  function flushSchedulerQueue () {
+    currentFlushTimestamp = getNow();
+    flushing = true;
+    var watcher, id;
+    // 对queue的watcher进行排序
+    queue.sort(function (a, b) { return a.id - b.id; });
+    // 循环执行queue.length，为了确保由于渲染时添加新的依赖导致queue的长度不断改变。
+    for (index = 0; index < queue.length; index++) {
+      watcher = queue[index];
+      // 如果watcher定义了before的配置，则优先执行before方法，即该watcher的beforeUpdate
+      if (watcher.before) {
+        watcher.before();
+      }
+      id = watcher.id;
+      has[id] = null;
+      watcher.run();
+      // in dev build, check and stop circular updates.
+      if (has[id] != null) {
+        circular[id] = (circular[id] || 0) + 1;
+        if (circular[id] > MAX_UPDATE_COUNT) {
+          warn(
+            'You may have an infinite update loop ' + (
+              watcher.user
+                ? ("in watcher with expression \"" + (watcher.expression) + "\"")
+                : "in a component render function."
+            ),
+            watcher.vm
+          );
+          break
+        }
+      }
+    }
+
+    // keep copies of post queues before resetting state
+    var activatedQueue = activatedChildren.slice();
+    var updatedQueue = queue.slice();
+    // 重置恢复状态，清空队列
+    resetSchedulerState();
+
+    // 视图改变后，调用其他钩子
+    callActivatedHooks(activatedQueue);
+    callUpdatedHooks(updatedQueue);
+
+    // devtool hook
+    /* istanbul ignore if */
+    if (devtools && config.devtools) {
+      devtools.emit('flush');
+    }
+  }
+  ````
+  + watcher.run() 首先会执行watcher.prototype.get的方法，得到数据变化后的当前值，之后会对新值做判断，如果判断满足条件，则执行cb,cb为实例化watcher时传入的回调。
+  ````js
+  Watcher.prototype.run = function run () {
+    if (this.active) {
+      var value = this.get();
+      if ( value !== this.value || isObject(value) || this.deep ) {
+        // 设置新值
+        var oldValue = this.value;
+        this.value = value;
+        // 针对user watcher，暂时不分析
+        if (this.user) {
+          try {
+            this.cb.call(this.vm, value, oldValue);
+          } catch (e) {
+            handleError(e, this.vm, ("callback for watcher \"" + (this.expression) + "\""));
+          }
+        } else {
+          this.cb.call(this.vm, value, oldValue);
+        }
+      }
+    }
+  };
   ````
