@@ -119,6 +119,90 @@
   +  getter如果遇到属性值为对象时，会为该对象的每个值收集依赖。这句话也很好理解，如果我们将一个值为基本类型的响应式数据改变成一个对象(比如由null改为Object)，此时新增对象里的属性，也需要设置成响应式数据。遇到属性值为数组时，进行其他特殊处理。通俗的总结一下依赖收集的过程，每个数据就是一个依赖管理器，而每个使用数据的地方就是一个依赖。当访问到数据时，会将当前访问的场景作为一个依赖收集到依赖管理器中，同时也会为这个场景的依赖收集拥有的数据。
 
 
+## computed依赖收集
+  + computed的初始化过程，会遍历computed的每一个属性值，并为每一个属性实例化一个computed watcher，其中{ lazy: true}是computed watcher的标志，最终会调用defineComputed将数据设置为响应式数据，对应源码如下：
+  ````js
+  function initComputed() {
+    ···
+    for(var key in computed) {
+      watchers[key] = new Watcher(
+          vm,
+          getter || noop,
+          noop,
+          computedWatcherOptions
+        );
+    }
+    if (!(key in vm)) {
+      defineComputed(vm, key, userDef);
+    }
+  }
+
+  // computed watcher的标志，lazy属性为true
+  var computedWatcherOptions = { lazy: true };
+  ````
+
+  + defineComputed的逻辑和分析data的逻辑相似，最终调用Object.defineProperty进行数据拦截。具体的定义如下：
+  ````js
+  function defineComputed (target,key,userDef) {
+    // 非服务端渲染会对getter进行缓存
+    var shouldCache = !isServerRendering();
+    if (typeof userDef === 'function') {
+      // 
+      sharedPropertyDefinition.get = shouldCache
+        ? createComputedGetter(key)
+        : createGetterInvoker(userDef);
+      sharedPropertyDefinition.set = noop;
+    } else {
+      sharedPropertyDefinition.get = userDef.get
+        ? shouldCache && userDef.cache !== false
+          ? createComputedGetter(key)
+          : createGetterInvoker(userDef.get)
+        : noop;
+      sharedPropertyDefinition.set = userDef.set || noop;
+    }
+    if (sharedPropertyDefinition.set === noop) {
+      sharedPropertyDefinition.set = function () {
+        warn(
+          ("Computed property \"" + key + "\" was assigned to but it has no setter."),
+          this
+        );
+      };
+    }
+    Object.defineProperty(target, key, sharedPropertyDefinition);
+  }
+  ````
+
+  + 在非服务端渲染的情形，计算属性的计算结果会被缓存，缓存的意义在于，只有在相关响应式数据发生变化时，computed才会重新求值，其余情况多次访问计算属性的值都会返回之前计算的结果，这就是缓存的优化，computed属性有两种写法，一种是函数，另一种是对象，其中对象的写法需要提供getter和setter方法。当访问到computed属性时，会触发getter方法进行依赖收集，看看createComputedGetter的实现。
+  ````js
+  function createComputedGetter (key) {
+      return function computedGetter () {
+        var watcher = this._computedWatchers && this._computedWatchers[key];
+        if (watcher) {
+          if (watcher.dirty) {
+            watcher.evaluate();
+          }
+          if (Dep.target) {
+            watcher.depend();
+          }
+          return watcher.value
+        }
+      }
+    }
+  ````
+
+  + createComputedGetter返回的函数在执行过程中会先拿到属性的computed watcher,dirty是标志是否已经执行过计算结果，如果执行过则不会执行watcher.evaluate重复计算，这也是缓存的原理。
+  ````js
+  Watcher.prototype.evaluate = function evaluate () {
+    // 对于计算属性而言 evaluate的作用是执行计算回调
+    this.value = this.get();
+    this.dirty = false;
+  };
+  ````
+
+  + get方法前面介绍过，会调用实例化watcher时传递的执行函数，在computer watcher的场景下，执行函数是计算属性的计算函数，他可以是一个函数，也可以是对象的getter方法。
+    - 列举一个场景避免和data的处理脱节，computed在计算阶段，如果访问到data数据的属性值，会触发data数据的getter方法进行依赖收集，根据前面分析，data的Dep收集器会将当前watcher作为依赖进行收集，而这个watcher就是computed watcher，并且会为当前的watcher添加访问的数据Dep。
+
+  + 回到计算执行函数的this.get()方法，getter执行完成后同样会进行依赖的清除，原理和目的参考data阶段的分析。get执行完毕后会进入watcher.depend进行依赖的收集。收集过程和data一致,将当前的computed watcher作为依赖收集到数据的依赖收集器Dep中。这就是computed依赖收集的完整过程，对比data的依赖收集，computed会对运算的结果进行缓存，避免重复执行运算过程。
 
 ## 派发更新
   + 在数据发生改变时，会执行定义好的setter方法，先看源码。
@@ -157,11 +241,14 @@
   };
   ````
 
-  + 更新时会将每个watcher推到队列中，等待下一个tick到来时取出每个watcher进行run操作
+  + 更新时会将每个watcher推到队列中，等待下一个tick到来时取出每个watcher进行run操作(非计算属性的更新)
   ````js
   Watcher.prototype.update = function update () {
-    ···
-    queueWatcher(this);
+    if (this.lazy) {
+      this.dirty = true;  // 计算属性分支  
+    } else {
+      queueWatcher(this);
+    }
   };
   ````
 
