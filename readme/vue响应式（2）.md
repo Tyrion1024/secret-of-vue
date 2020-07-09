@@ -120,13 +120,6 @@
 
 
 
-
-
-
-
-
-
-
 ## 派发更新
   + 在数据发生改变时，会执行定义好的setter方法，先看源码。
   ````js
@@ -145,6 +138,7 @@
       }
   })
   ````
+
   + 派发更新阶段会做以下几件事(代码如上)：
     1. 判断数据更改前后是否一致，如果数据相等则不进行任何派发更新操作。
     2. 新值为对象时，会对该值的属性进行依赖收集过程。
@@ -162,6 +156,7 @@
     }
   };
   ````
+
   + 更新时会将每个watcher推到队列中，等待下一个tick到来时取出每个watcher进行run操作
   ````js
   Watcher.prototype.update = function update () {
@@ -169,6 +164,7 @@
     queueWatcher(this);
   };
   ````
+
   + queueWatcher方法的调用，会将数据所收集的依赖依次推到queue数组中,数组会在下一个事件循环'tick'中根据缓冲结果进行视图更新。而在执行视图更新过程中，难免会因为数据的改变而在渲染模板上添加新的依赖，这样又会执行queueWatcher的过程。所以需要有一个标志位来记录是否处于异步更新过程的队列中。这个标志位为flushing,当处于异步更新过程时，新增的watcher会替换队列中未执行的同id的watcher或者插入到queue中。
   ````js
   function queueWatcher (watcher) {
@@ -190,6 +186,7 @@
     }
   }
   ````
+
   + nextTick会缓冲多个数据处理过程，等到下一个事件循环tick中再去执行DOM操作，它的原理，本质是利用事件循环的微任务队列实现异步更新。当下一个tick到来时，会执行flushSchedulerQueue方法，它会拿到收集的queue数组(这是一个watcher的集合),并对数组依赖进行排序。为什么进行排序呢？源码中解释了三点：
     1. 组件创建是先父后子，所以组件的更新也是先父后子，因此需要保证父的渲染watcher优先于子的渲染watcher更新。
     2. 用户自定义的watcher,称为user watcher。 user watcher和render watcher执行也有先后，由于user watchers比render watcher要先创建，所以user watcher要优先执行。
@@ -250,6 +247,7 @@
     }
   }
   ````
+
   + watcher.run() 首先会执行watcher.prototype.get的方法，得到数据变化后的当前值，之后会对新值做判断，如果判断满足条件，则执行cb,cb为实例化watcher时传入的回调。
   ````js
   Watcher.prototype.run = function run () {
@@ -273,3 +271,104 @@
     }
   };
   ````
+
+  + 在分析get方法前，回头看看watcher构造函数的几个属性定义
+  ````js
+  var watcher = function Watcher(
+    vm, // 组件实例
+    expOrFn, // 执行函数
+    cb, // 回调
+    options, // 配置
+    isRenderWatcher // 是否为渲染watcher
+  ) {
+    this.vm = vm;
+      if (isRenderWatcher) {
+        vm._watcher = this;
+      }
+      vm._watchers.push(this);
+      // options
+      if (options) {
+        this.deep = !!options.deep;
+        this.user = !!options.user;
+        this.lazy = !!options.lazy;
+        this.sync = !!options.sync;
+        this.before = options.before;
+      } else {
+        this.deep = this.user = this.lazy = this.sync = false;
+      }
+      this.cb = cb;
+      this.id = ++uid$2; // uid for batching
+      this.active = true;
+      this.dirty = this.lazy; // for lazy watchers
+      this.deps = [];
+      this.newDeps = [];
+      this.depIds = new _Set();
+      this.newDepIds = new _Set();
+      this.expression = expOrFn.toString();
+      // parse expression for getter
+      if (typeof expOrFn === 'function') {
+        this.getter = expOrFn;
+      } else {
+        this.getter = parsePath(expOrFn);
+        if (!this.getter) {
+          this.getter = noop;
+          warn(
+            "Failed watching path: \"" + expOrFn + "\" " +
+            'Watcher only accepts simple dot-delimited paths. ' +
+            'For full control, use a function instead.',
+            vm
+          );
+        }
+      }
+      // lazy为计算属性标志，当watcher为计算watcher时，不会理解执行get方法进行求值
+      this.value = this.lazy
+        ? undefined
+        : this.get();
+  }
+  ````
+
+  + get方法会执行this.getter进行求值，在当前渲染watcher的条件下,getter会执行视图更新的操作。这一阶段会重新渲染页面组件。get的定义如下：
+  ````js
+  Watcher.prototype.get = function get () {
+    pushTarget(this);
+    var value;
+    var vm = this.vm;
+    try {
+      value = this.getter.call(vm, vm);
+    } catch (e) {
+     ···
+    } finally {
+      ···
+      // 把Dep.target恢复到上一个状态，依赖收集过程完成
+      popTarget();
+      this.cleanupDeps();
+    }
+    return value
+  };
+  ````
+
+  + 执行完getter方法后，最后一步会进行依赖的清除，也就是cleanupDeps的过程。关于依赖清除的作用，我们列举一个场景： 我们经常会使用v-if来进行模板的切换，切换过程中会执行不同的模板渲染，如果A模板监听a数据，B模板监听b数据，当渲染模板B时，如果不进行旧依赖的清除，在B模板的场景下，a数据的变化同样会引起依赖的重新渲染更新，这会造成性能的浪费。因此旧依赖的清除在优化阶段是有必要。
+  ````js
+  // 依赖清除的过程
+  Watcher.prototype.cleanupDeps = function cleanupDeps () {
+    var i = this.deps.length;
+    while (i--) {
+      var dep = this.deps[i];
+      if (!this.newDepIds.has(dep.id)) {
+        dep.removeSub(this);
+      }
+    }
+    var tmp = this.depIds;
+    this.depIds = this.newDepIds;
+    this.newDepIds = tmp;
+    this.newDepIds.clear();
+    tmp = this.deps;
+    this.deps = this.newDeps;
+    this.newDeps = tmp;
+    this.newDeps.length = 0;
+  };
+  ````
+
+  + 把上面分析的总结成依赖派发更新的最后两个点
+    1. 执行run操作会执行getter方法,也就是重新计算新值，针对渲染watcher而言，会重新执行updateComponent进行视图更新
+    2. 重新计算getter后，会进行依赖的清除
