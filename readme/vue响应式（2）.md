@@ -144,20 +144,24 @@
   + defineComputed的逻辑和分析data的逻辑相似，最终调用Object.defineProperty进行数据拦截。具体的定义如下：
   ````js
   function defineComputed (target,key,userDef) {
-    // 非服务端渲染会对getter进行缓存
-    var shouldCache = !isServerRendering();
-    if (typeof userDef === 'function') {
-      // 
-      sharedPropertyDefinition.get = shouldCache
-        ? createComputedGetter(key)
-        : createGetterInvoker(userDef);
+    var shouldCache = !isServerRendering(); // 非服务端渲染会对getter进行缓存，意义在于   只有在相关响应式数据发生变化时，computed才会重新求值，其余情况多次访问计算属性的值都会返回之前计算的结果。
+    if (typeof userDef === 'function') {   // computed属性为函数的情况
+      if (shouldCache) {
+        sharedPropertyDefinition.get = createComputedGetter(key)
+      } else {
+        sharedPropertyDefinition.get = createGetterInvoker(userDef)
+      }
       sharedPropertyDefinition.set = noop;
-    } else {
-      sharedPropertyDefinition.get = userDef.get
-        ? shouldCache && userDef.cache !== false
-          ? createComputedGetter(key)
-          : createGetterInvoker(userDef.get)
-        : noop;
+    } else {  // computed属性为对象的情况，需要用户自己写出get和set方法
+      if (userDef.get) {
+        if (shouldCache && userDef.cache) {
+          sharedPropertyDefinition.get = createComputedGetter(key)
+        } else {
+          sharedPropertyDefinition.get = createGetterInvoker(userDef.get)
+        }
+      } else {
+        sharedPropertyDefinition.get = noop
+      }
       sharedPropertyDefinition.set = userDef.set || noop;
     }
     if (sharedPropertyDefinition.set === noop) {
