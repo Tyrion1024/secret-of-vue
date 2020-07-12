@@ -9,17 +9,38 @@
 2. 新节点没有子节点，旧节点有子节点，则删除旧节点所有子节点。
 3. 旧节点没有子节点，新节点有子节点，则用新的所有子节点去更新旧节点。
 4. 新旧都存在子节点。则对比子节点内容做操作。
+````js
+patchVnode(nVnode, oVnode) {
+  if(nVnode.text && nVnode.text !== oVnode) {
+    // 当前真实dom元素
+    let ele = oVnode.elm
+    // 子节点为文本节点
+    ele.textContent = nVnode.text;
+  } else {
+    const oldCh = oVnode.children;
+    const newCh = nVnode.children;
+    // 新旧节点都存在。对比子节点
+    if (util._isDef(oldCh) && util._isDef(newCh)) {
+      this.updateChildren(ele, newCh, oldCh)
+    } else if (util._isDef(oldCh)) {
+      // 新节点没有子节点
+    } else {
+      // 老节点没有子节点
+    }
+  }
+}
+````
 
 
 ## 对比子节点（updateChildren）
 + 子节点对比的逻辑
 	1. 旧节点的起始位置为oldStartIndex,截至位置为oldEndIndex,新节点的起始位置为newStartIndex,截至位置为newEndIndex。
-	2。 新旧children的起始位置的元素两两对比，顺序是newStartVnode, oldStartVnode; newEndVnode, oldEndVnode;newEndVnode, oldStartVnode;newStartIndex, oldEndIndex
+	2. 新旧children的起始位置的元素两两对比，顺序是newStartVnode, oldStartVnode; newEndVnode, oldEndVnode;newEndVnode, oldStartVnode;newStartIndex, oldEndIndex
 	3. newStartVnode, oldStartVnode节点相同，执行一次patchVnode过程，也就是递归对比相应子节点，并替换节点的过程。oldStartIndex，newStartIndex都像右移动一位。
 	4. newEndVnode, oldEndVnode节点相同，执行一次patchVnode过程，递归对比相应子节点，并替换节点。oldEndIndex， newEndIndex都像左移动一位。
 	5. newEndVnode, oldStartVnode节点相同，执行一次patchVnode过程，并将旧的oldStartVnode移动到尾部,oldStartIndex右移一味，newEndIndex左移一位。
 	6. newStartIndex, oldEndIndex节点相同，执行一次patchVnode过程，并将旧的oldEndVnode移动到头部,oldEndIndex左移一味，newStartIndex右移一位。
-	7. 四种组合都不相同，则会搜索旧节点所有子节点，找到将这个旧节点和newStartVnode执行patchVnode过程。
+	7. 四种组合都不相同，则会搜索旧节点所有子节点，找到将这个旧节点中和newStartVnode相同的节点执行patchVnode过程。
 	8. 不断对比的过程使得oldStartIndex不断逼近oldEndIndex，newStartIndex不断逼近newEndIndex。当oldEndIndex <= oldStartIndex说明旧节点已经遍历完了，此时只要批量增加新节点即可。当newEndIndex <= newStartIndex说明旧节点还有剩下，此时只要批量删除旧节点即可。
 
 + 步骤图解
